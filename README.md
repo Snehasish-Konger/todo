@@ -1,70 +1,160 @@
-# Getting Started with Create React App
+Here’s a developer‑focused README that explains setup, structure, and key flows. Feel free to adapt it for your repo.
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+---
 
-## Available Scripts
+## Tasks Tracker (React + Firebase + Mixpanel)
 
-In the project directory, you can run:
+A single‑page to‑do app with anonymous & Google sign‑in, Firestore sync, and Mixpanel analytics. You can run it locally, extend its features, or deploy to Vercel in minutes.
 
-### `npm start`
+---
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+### Features
 
-The page will reload when you make changes.\
-You may also see any lint errors in the console.
+- **Anonymous usage**: Users can add, delete, reorder, and archive tasks without login.  
+- **Google sign‑in**: Link your anonymous session to a Google account. All past events merge under your user ID.  
+- **Firestore persistence**: Tasks live in localStorage and, after login, sync to Firestore. Deletes and clears also update the database and archive old items.  
+- **Mixpanel tracking**: Tracks all task events, auth events, and stitches anonymous history to your profile.  
+- **Notion‑style UI**: Clean, white theme with tabs for “All Tasks” and “Archived”.
 
-### `npm test`
+---
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+### Prerequisites
 
-### `npm run build`
+- Node 14+ and npm or Yarn  
+- A Firebase project with Firestore enabled  
+- A Mixpanel project and token  
+- (Optional) Vercel account for hosting  
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+---
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
+### Setup & Installation
 
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+1. **Clone the repo**  
+   ```bash
+   git clone https://github.com/your-username/tasks-tracker.git
+   cd tasks-tracker
+   ```
 
-### `npm run eject`
+2. **Create `.env`** at project root (next to `package.json`):  
+   ```dotenv
+   REACT_APP_FIREBASE_API_KEY=…
+   REACT_APP_FIREBASE_AUTH_DOMAIN=…
+   REACT_APP_FIREBASE_PROJECT_ID=…
+   REACT_APP_FIREBASE_STORAGE_BUCKET=…
+   REACT_APP_FIREBASE_MESSAGING_SENDER_ID=…
+   REACT_APP_FIREBASE_APP_ID=…
 
-**Note: this is a one-way operation. Once you `eject`, you can't go back!**
+   REACT_APP_MIXPANEL_TOKEN=…
+   ```
+   > Restart your dev server after editing `.env`.
 
-If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+3. **Install dependencies**  
+   ```bash
+   npm install
+   # or
+   yarn install
+   ```
 
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
+4. **Run locally**  
+   ```bash
+   npm start
+   # or
+   yarn start
+   ```
+   Visit <http://localhost:3000>.
 
-You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
+---
 
-## Learn More
+### Scripts
 
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
+- `start` — Launches development server.  
+- `build` — Creates production bundle in `build/`.  
+- `test` — Runs tests (not configured by default).  
+- `deploy` — You can link to Vercel (see below).
 
-To learn React, check out the [React documentation](https://reactjs.org/).
+---
 
-### Code Splitting
+### Project Structure
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
+```
+src/
+│
+├── App.js         // Main UI and logic: auth, tabs, task flows
+├── SignUp.js      // Top nav with user menu (login/sign‑out)
+├── firebase.js    // Firebase config & exports (auth, db, provider)
+├── assets/        // SVG icons: user, Google, cloud
+├── index.js       // Entry point: renders App
+└── styles/        // Tailwind setup (if separated)
+```
 
-### Analyzing the Bundle Size
+---
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
+### Core Components
 
-### Making a Progressive Web App
+#### `firebase.js`
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
+- Reads config from `process.env.REACT_APP_*`.  
+- Exports `auth`, `db`, and Google `provider`.
 
-### Advanced Configuration
+```js
+const firebaseConfig = {
+  apiKey: process.env.REACT_APP_FIREBASE_API_KEY,
+  /* … */
+};
+const app = initializeApp(firebaseConfig);
+export const auth = getAuth(app);
+export const db = getFirestore(app);
+export const provider = new GoogleAuthProvider();
+```
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
+#### `App.js`
 
-### Deployment
+- Initializes Mixpanel with `process.env.REACT_APP_MIXPANEL_TOKEN`.  
+- Uses `onAuthStateChanged` to sign in anonymously or stitch on Google login.  
+- Maintains `todos`, `activeTab` (`'all'` | `'archived'`), and input state.  
+- Defines handlers:
+  - `addTodo`, `deleteTodo`, `bulkDelete`, `clearCompleted`, `clearCache`: update local state, Firestore, and Mixpanel.  
+  - Tab switching with `useEffect` to fetch `items` or `archived` arrays from Firestore.  
+- Renders:
+  - `<SignUp>` nav (login/sign‑out toggle)  
+  - Tab bar (clickable)  
+  - Task table with select, reorder, status toggle, and delete buttons  
+  - `<ToastContainer>` for feedback  
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
+#### `SignUp.js`
 
-### `npm run build` fails to minify
+- Fixed top nav with brand on left and user‑menu on right.  
+- Dropdown shows “Continue with Google” or “Sign Out.”  
+- Calls `onLogin`, `onSignOut` props.  
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
+---
+
+### Analytics (Mixpanel)
+
+- **Init** in `App.js`:
+  ```js
+  import mixpanel from 'mixpanel-browser';
+  mixpanel.init(process.env.REACT_APP_MIXPANEL_TOKEN, { persistence: 'localStorage' });
+  ```
+- **trackEvent** calls `mixpanel.track(name, props)`.  
+- On login: `mixpanel.alias(uid); mixpanel.identify(uid)` merges pre‑login events.
+
+---
+
+### Deployment on Vercel
+
+1. Push to GitHub.  
+2. In Vercel dashboard, import your repo.  
+3. Set Environment Variables (same as `.env`).  
+4. Use default Build Command (`npm run build`) and Output Directory (`build`).  
+5. Click **Deploy**.  
+
+Each push to `main` auto‑triggers a new deploy.
+
+---
+
+### Next Steps
+
+- Add unit or integration tests.  
+- Extend task properties (due dates, priorities).  
+- Enable PostHog session recordings.  
