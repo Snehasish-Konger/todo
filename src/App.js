@@ -27,9 +27,6 @@ function App() {
   const [activeTab, setActiveTab] = useState("all");
   const [labelInput, setLabelInput] = useState("");
   const [anonymousId, setAnonymousId] = useState(null);
-  const [archivedTodos, setArchivedTodos] = useState(
-    JSON.parse(localStorage.getItem("archived")) || []
-  );
 
   const toggleSelect = (id) => {
     setTodos(
@@ -51,65 +48,62 @@ function App() {
       setAnonymousId(newAnonymousId);
       mixpanel.identify(newAnonymousId);
     }
-
     trackEvent("App Opened");
 
     const unsub = onAuthStateChanged(auth, async (u) => {
       if (u) {
         setUser(u);
-
         if (!u.isAnonymous) {
-          // 1) Stitch Mixpanel anon → auth
           if (anonymousId && anonymousId !== u.uid) {
             mixpanel.alias(u.uid, anonymousId);
           }
           mixpanel.identify(u.uid);
-
-          // 2) Set Mixpanel profile
           mixpanel.people.set({
             $email: u.email,
             $name: u.displayName || u.email,
             $last_login: new Date().toISOString(),
             userType: "authenticated",
           });
-
           trackEvent("User Authenticated", {
             method: "Google",
             userId: u.uid,
             previouslyAnonymous: Boolean(localStorage.getItem("todos")),
           });
-
-          // 3) Sync anonymous todos → cloud items
-          if (localStorage.getItem("todos")) {
-            const anonTodos = JSON.parse(localStorage.getItem("todos"));
-            await setDoc(
-              doc(db, "todos", u.uid),
-              { items: anonTodos },
-              { merge: true }
-            );
-            localStorage.removeItem("todos");
-            toast.success("Synced your todos to Cloud");
-            trackEvent("Anonymous Todos Synced", { count: anonTodos.length });
-          }
-
-          // 4) Sync anonymous archived → cloud archived
-          if (localStorage.getItem("archived")) {
-            const anonArchived = JSON.parse(localStorage.getItem("archived"));
-            // fetch existing cloud archive
-            const ref = doc(db, "todos", u.uid);
-            const snap = await getDoc(ref);
-            const data = snap.exists() ? snap.data() : { archived: [] };
-            const updatedArchived = [...(data.archived || []), ...anonArchived];
-
-            await setDoc(ref, { archived: updatedArchived }, { merge: true });
-            localStorage.removeItem("archived");
-            toast.success("Synced your archived tasks to Cloud");
-            trackEvent("Anonymous Archived Synced", {
-              count: anonArchived.length,
-            });
-          }
+          const localItems = JSON.parse(localStorage.getItem("todos") || "[]");
+          const localArchived = JSON.parse(
+            localStorage.getItem("archived") || "[]"
+          );
+          const ref = doc(db, "todos", u.uid);
+          const snap = await getDoc(ref);
+          const data = snap.exists()
+            ? snap.data()
+            : { items: [], archived: [] };
+          const mergedItems = [
+            ...new Map(
+              [...data.items, ...localItems].map((t) => [t.id, t])
+            ).values(),
+          ];
+          const mergedArchived = [
+            ...new Map(
+              [...data.archived, ...localArchived].map((t) => [t.id, t])
+            ).values(),
+          ];
+          const finalItems = mergedItems.filter(
+            (t) => !mergedArchived.some((a) => a.id === t.id)
+          );
+          await setDoc(
+            ref,
+            { items: finalItems, archived: mergedArchived },
+            { merge: true }
+          );
+          localStorage.removeItem("todos");
+          localStorage.removeItem("archived");
+          toast.success("Synced your tasks & archives to Cloud");
+          trackEvent("AnonymousHistoryStitched", {
+            items: finalItems.length,
+            archived: mergedArchived.length,
+          });
         } else {
-          // anonymous session
           mixpanel.people.set({ userType: "anonymous" });
           trackEvent("Anonymous Session Started");
         }
@@ -125,27 +119,39 @@ function App() {
       if (activeTab === "all") {
         if (user && !user.isAnonymous) {
           const snap = await getDoc(doc(db, "todos", user.uid));
-          const data = snap.exists() ? snap.data() : { items: [] };
-          setTodos(data.items);
-          trackEvent("FetchAllTasks", { count: data.items.length });
+          const data = snap.exists()
+            ? {
+                items: snap.data().items || [],
+                archived: snap.data().archived || [],
+              }
+            : { items: [], archived: [] };
+          const visible = data.items.filter(
+            (t) => !data.archived.some((a) => a.id === t.id)
+          );
+          setTodos(visible);
+          trackEvent("FetchAllTasks", { count: visible.length });
+        } else {
+          const local = JSON.parse(localStorage.getItem("todos") || "[]");
+          setTodos(local);
+          trackEvent("FetchAllTasks (anon)", { count: local.length });
         }
       } else {
         if (user && !user.isAnonymous) {
           const snap = await getDoc(doc(db, "todos", user.uid));
-          const data = snap.exists() ? snap.data() : { archived: [] };
-          setTodos(data.archived);
-          trackEvent("FetchArchivedTasks", { count: data.archived.length });
+          const archived = snap.exists() ? snap.data().archived || [] : [];
+          setTodos(archived);
+          trackEvent("FetchArchivedTasks", { count: archived.length });
         } else {
-          setTodos(archivedTodos);
-          trackEvent("FetchArchivedTasks (anon)", {
-            count: archivedTodos.length,
-          });
+          const localArch = JSON.parse(
+            localStorage.getItem("archived") || "[]"
+          );
+          setTodos(localArch);
+          trackEvent("FetchArchivedTasks (anon)", { count: localArch.length });
         }
       }
     };
-
     loadTab();
-  }, [activeTab, user, archivedTodos]);
+  }, [activeTab, user]);
 
   // Load from localStorage
   useEffect(() => {
@@ -388,11 +394,14 @@ function App() {
 
     // 1) update local state
     setTodos(remaining);
-    setArchivedTodos((prev) => {
-      const updated = [...prev, ...completedTasks];
-      localStorage.setItem("archived", JSON.stringify(updated));
-      return updated;
-    });
+
+    // Store directly to localStorage without using state
+    const currentArchived = JSON.parse(
+      localStorage.getItem("archived") || "[]"
+    );
+    const updatedArchived = [...currentArchived, ...completedTasks];
+    localStorage.setItem("archived", JSON.stringify(updatedArchived));
+
     toast.info("Cleared completed");
     trackEvent("ClearedCompleted", { count: completedTasks.length });
 
