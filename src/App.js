@@ -34,85 +34,169 @@ function App() {
     );
     trackEvent("Todo Selected", { id });
   };
-
   useEffect(() => {
-    const storedAnonymousId = localStorage.getItem("anonymousId");
-    if (storedAnonymousId) {
-      setAnonymousId(storedAnonymousId);
-      mixpanel.identify(storedAnonymousId);
-    } else {
-      const newAnonymousId = `anon-${Date.now()}-${Math.random()
-        .toString(36)
-        .substring(2, 10)}`;
-      localStorage.setItem("anonymousId", newAnonymousId);
-      setAnonymousId(newAnonymousId);
-      mixpanel.identify(newAnonymousId);
-    }
-    trackEvent("App Opened");
+    const hasLoggedInBefore =
+      localStorage.getItem("hasEverLoggedIn") === "true";
+    const permanentUserId = localStorage.getItem("permanentUserId");
+
+    const setupIdentification = () => {
+      if (hasLoggedInBefore && permanentUserId) {
+        console.log(
+          "User has logged in before, using permanent ID:",
+          permanentUserId
+        );
+        mixpanel.identify(permanentUserId);
+      } else {
+        const storedAnonymousId = localStorage.getItem("temporaryAnonymousId");
+
+        if (storedAnonymousId) {
+          console.log("Using existing anonymous ID:", storedAnonymousId);
+          mixpanel.identify(storedAnonymousId);
+        } else {
+          const newAnonymousId = `anon-${Date.now()}-${Math.random()
+            .toString(36)
+            .substring(2, 10)}`;
+          localStorage.setItem("temporaryAnonymousId", newAnonymousId);
+          console.log("Created new anonymous ID:", newAnonymousId);
+          mixpanel.identify(newAnonymousId);
+        }
+      }
+
+      trackEvent("App Opened");
+    };
+
+    setupIdentification();
 
     const unsub = onAuthStateChanged(auth, async (u) => {
       if (u) {
         setUser(u);
+
         if (!u.isAnonymous) {
-          if (anonymousId && anonymousId !== u.uid) {
-            mixpanel.alias(u.uid, anonymousId);
+          const isFirstLogin = !localStorage.getItem("hasEverLoggedIn");
+          if (isFirstLogin) {
+            console.log("First login ever detected!");
+            const anonymousId = localStorage.getItem("temporaryAnonymousId");
+
+            if (anonymousId) {
+              console.log(
+                "Merging anonymous ID:",
+                anonymousId,
+                "to user ID:",
+                u.uid
+              );
+
+              const currentDeviceId = mixpanel.get_property("$device_id");
+              mixpanel.alias(u.uid, anonymousId);
+              mixpanel.identify(u.uid);
+              mixpanel.register({
+                $device_id: currentDeviceId,
+              });
+
+              trackEvent("Anonymous ID Merged", {
+                anonymousId: anonymousId,
+                permanentId: u.uid,
+                deviceId: currentDeviceId,
+              });
+            } else {
+              mixpanel.identify(u.uid);
+            }
+
+            localStorage.setItem("hasEverLoggedIn", "true");
+            localStorage.setItem("permanentUserId", u.uid);
+            localStorage.removeItem("temporaryAnonymousId");
+          } else {
+            const storedPermanentId = localStorage.getItem("permanentUserId");
+
+            if (storedPermanentId !== u.uid) {
+              console.log(
+                "Different user logged in. Previous:",
+                storedPermanentId,
+                "Current:",
+                u.uid
+              );
+              localStorage.setItem("permanentUserId", u.uid);
+            }
+
+            mixpanel.identify(u.uid);
           }
-          mixpanel.identify(u.uid);
+
           mixpanel.people.set({
             $email: u.email,
             $name: u.displayName || u.email,
             $last_login: new Date().toISOString(),
             userType: "authenticated",
           });
+
+          trackEvent("Login Attempt Successful");
           trackEvent("User Authenticated", {
             method: "Google",
             userId: u.uid,
-            previouslyAnonymous: Boolean(localStorage.getItem("todos")),
+            isFirstLogin: isFirstLogin,
           });
+
           const localItems = JSON.parse(localStorage.getItem("todos") || "[]");
           const localArchived = JSON.parse(
             localStorage.getItem("archived") || "[]"
           );
-          const ref = doc(db, "todos", u.uid);
-          const snap = await getDoc(ref);
-          const data = snap.exists()
-            ? snap.data()
-            : { items: [], archived: [] };
-          const mergedItems = [
-            ...new Map(
-              [...data.items, ...localItems].map((t) => [t.id, t])
-            ).values(),
-          ];
-          const mergedArchived = [
-            ...new Map(
-              [...data.archived, ...localArchived].map((t) => [t.id, t])
-            ).values(),
-          ];
-          const finalItems = mergedItems.filter(
-            (t) => !mergedArchived.some((a) => a.id === t.id)
-          );
-          await setDoc(
-            ref,
-            { items: finalItems, archived: mergedArchived },
-            { merge: true }
-          );
-          localStorage.removeItem("todos");
-          localStorage.removeItem("archived");
-          toast.success("Synced your tasks & archives to Cloud");
-          trackEvent("Anonymous Todos Synced", {
-            items: finalItems.length,
-            archived: mergedArchived.length,
-          });
+
+          if (localItems.length > 0 || localArchived.length > 0) {
+            const ref = doc(db, "todos", u.uid);
+            const snap = await getDoc(ref);
+            const data = snap.exists()
+              ? snap.data()
+              : { items: [], archived: [] };
+
+            const mergedItems = [
+              ...new Map(
+                [...data.items, ...localItems].map((t) => [t.id, t])
+              ).values(),
+            ];
+
+            const mergedArchived = [
+              ...new Map(
+                [...data.archived, ...localArchived].map((t) => [t.id, t])
+              ).values(),
+            ];
+
+            const finalItems = mergedItems.filter(
+              (t) => !mergedArchived.some((a) => a.id === t.id)
+            );
+
+            await setDoc(
+              ref,
+              { items: finalItems, archived: mergedArchived },
+              { merge: true }
+            );
+
+            localStorage.removeItem("todos");
+            localStorage.removeItem("archived");
+
+            toast.success("Synced your tasks & archives to Cloud");
+            trackEvent("Anonymous Todos Synced", {
+              items: finalItems.length,
+              archived: mergedArchived.length,
+            });
+          }
         } else {
-          mixpanel.people.set({ userType: "anonymous" });
-          trackEvent("Anonymous Session Started");
+          if (!localStorage.getItem("hasEverLoggedIn")) {
+            mixpanel.people.set({ userType: "anonymous" });
+            trackEvent("Anonymous Session Started");
+            trackEvent("FetchAllTasks (anon)");
+          } else {
+            const permanentId = localStorage.getItem("permanentUserId");
+            if (permanentId) {
+              mixpanel.identify(permanentId);
+              trackEvent("FetchAllTasks");
+            }
+          }
         }
       } else {
         await signInAnonymously(auth);
       }
     });
+
     return unsub;
-  }, [anonymousId]);
+  }, []);
 
   useEffect(() => {
     const loadTab = async () => {
