@@ -99,7 +99,7 @@ function App() {
           localStorage.removeItem("todos");
           localStorage.removeItem("archived");
           toast.success("Synced your tasks & archives to Cloud");
-          trackEvent("AnonymousHistoryStitched", {
+          trackEvent("Anonymous Todos Synced", {
             items: finalItems.length,
             archived: mergedArchived.length,
           });
