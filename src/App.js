@@ -27,6 +27,9 @@ function App() {
   const [activeTab, setActiveTab] = useState("all");
   const [labelInput, setLabelInput] = useState("");
   const [anonymousId, setAnonymousId] = useState(null);
+  const [archivedTodos, setArchivedTodos] = useState(
+    JSON.parse(localStorage.getItem("archived")) || []
+  );
 
   const toggleSelect = (id) => {
     setTodos(
@@ -48,102 +51,67 @@ function App() {
       setAnonymousId(newAnonymousId);
       mixpanel.identify(newAnonymousId);
     }
+
     trackEvent("App Opened");
+
     const unsub = onAuthStateChanged(auth, async (u) => {
       if (u) {
         setUser(u);
+
         if (!u.isAnonymous) {
+          // 1) Stitch Mixpanel anon → auth
           if (anonymousId && anonymousId !== u.uid) {
             mixpanel.alias(u.uid, anonymousId);
           }
           mixpanel.identify(u.uid);
-          // Set user properties
+
+          // 2) Set Mixpanel profile
           mixpanel.people.set({
             $email: u.email,
             $name: u.displayName || u.email,
             $last_login: new Date().toISOString(),
             userType: "authenticated",
           });
-          // Track login event
+
           trackEvent("User Authenticated", {
             method: "Google",
             userId: u.uid,
             previouslyAnonymous: Boolean(localStorage.getItem("todos")),
           });
-          // Sync local anonymous todos to user's cloud todos only if there are local todos
-          const localTodos = localStorage.getItem("todos");
-          if (localTodos) {
-            const anon = JSON.parse(localTodos);
-            // Check if the user has cloud todos before overwriting
-            const snap = await getDoc(doc(db, "todos", u.uid));
-            if (snap.exists()) {
-              const cloudData = snap.data();
-              // Merge cloud and local todos only if the local todos exist
-              if (anon && anon.length > 0) {
-                // Merge cloud and local todos (keeping cloud as primary but adding local todos that don't exist in cloud)
-                const cloudTodos = cloudData.items || [];
 
-                // Create a Set of existing todo IDs for faster lookup
-                const cloudTodoIds = new Set(cloudTodos.map((todo) => todo.id));
-
-                // Find local todos that don't exist in cloud
-                const newLocalTodos = anon.filter(
-                  (todo) => !cloudTodoIds.has(todo.id)
-                );
-
-                // Merge cloud and new local todos
-                const mergedTodos = [...cloudTodos, ...newLocalTodos];
-
-                await setDoc(
-                  doc(db, "todos", u.uid),
-                  { items: mergedTodos, archived: cloudData.archived || [] },
-                  { merge: true }
-                );
-
-                toast.success(
-                  `Synced ${newLocalTodos.length} local todos to Cloud`
-                );
-                trackEvent("Todos Merged", {
-                  localCount: anon.length,
-                  cloudCount: cloudTodos.length,
-                  newItemsAdded: newLocalTodos.length,
-                });
-              }
-            } else {
-              await setDoc(
-                doc(db, "todos", u.uid),
-                { items: anon, archived: [] },
-                { merge: true }
-              );
-              toast.success("Synced your todos to Cloud");
-              trackEvent("Anonymous Todos Synced", { count: anon.length });
-            }
+          // 3) Sync anonymous todos → cloud items
+          if (localStorage.getItem("todos")) {
+            const anonTodos = JSON.parse(localStorage.getItem("todos"));
+            await setDoc(
+              doc(db, "todos", u.uid),
+              { items: anonTodos },
+              { merge: true }
+            );
             localStorage.removeItem("todos");
-          } else {
-            const snap = await getDoc(doc(db, "todos", u.uid));
-            if (snap.exists()) {
-              const cloudData = snap.data();
-              setTodos(cloudData.items || []);
-              toast.info(
-                `Loaded ${(cloudData.items || []).length} todos from Cloud`
-              );
-              trackEvent("CloudTodosLoaded", {
-                count: (cloudData.items || []).length,
-              });
-            }
+            toast.success("Synced your todos to Cloud");
+            trackEvent("Anonymous Todos Synced", { count: anonTodos.length });
+          }
+
+          // 4) Sync anonymous archived → cloud archived
+          if (localStorage.getItem("archived")) {
+            const anonArchived = JSON.parse(localStorage.getItem("archived"));
+            // fetch existing cloud archive
+            const ref = doc(db, "todos", u.uid);
+            const snap = await getDoc(ref);
+            const data = snap.exists() ? snap.data() : { archived: [] };
+            const updatedArchived = [...(data.archived || []), ...anonArchived];
+
+            await setDoc(ref, { archived: updatedArchived }, { merge: true });
+            localStorage.removeItem("archived");
+            toast.success("Synced your archived tasks to Cloud");
+            trackEvent("Anonymous Archived Synced", {
+              count: anonArchived.length,
+            });
           }
         } else {
-          mixpanel.people.set({
-            userType: "anonymous",
-          });
+          // anonymous session
+          mixpanel.people.set({ userType: "anonymous" });
           trackEvent("Anonymous Session Started");
-
-          const stored = localStorage.getItem("todos");
-          if (stored) {
-            const parsedTodos = JSON.parse(stored);
-            setTodos(parsedTodos);
-            trackEvent("Local Todos Loaded", { count: parsedTodos.length });
-          }
         }
       } else {
         await signInAnonymously(auth);
@@ -154,57 +122,63 @@ function App() {
 
   useEffect(() => {
     const loadTab = async () => {
-      if (!user || user.isAnonymous) return;
-      const snap = await getDoc(doc(db, "todos", user.uid));
-      if (!snap.exists()) return;
-      const data = snap.data();
       if (activeTab === "all") {
-        setTodos(data.items || []);
-        trackEvent("FetchAllTasks", { count: (data.items || []).length });
+        if (user && !user.isAnonymous) {
+          const snap = await getDoc(doc(db, "todos", user.uid));
+          const data = snap.exists() ? snap.data() : { items: [] };
+          setTodos(data.items);
+          trackEvent("FetchAllTasks", { count: data.items.length });
+        }
       } else {
-        setTodos(data.archived || []);
-        trackEvent("FetchArchivedTasks", {
-          count: (data.archived || []).length,
-        });
+        if (user && !user.isAnonymous) {
+          const snap = await getDoc(doc(db, "todos", user.uid));
+          const data = snap.exists() ? snap.data() : { archived: [] };
+          setTodos(data.archived);
+          trackEvent("FetchArchivedTasks", { count: data.archived.length });
+        } else {
+          setTodos(archivedTodos);
+          trackEvent("FetchArchivedTasks (anon)", {
+            count: archivedTodos.length,
+          });
+        }
       }
     };
-    loadTab();
-  }, [activeTab, user]);
 
+    loadTab();
+  }, [activeTab, user, archivedTodos]);
+
+  // Load from localStorage
   useEffect(() => {
-    if (!user || user.isAnonymous) {
-      const stored = localStorage.getItem("todos");
-      if (stored) {
-        const parsedTodos = JSON.parse(stored);
-        setTodos(parsedTodos);
-        trackEvent("Local Todos Loaded", { count: parsedTodos.length });
-      }
+    const stored = localStorage.getItem("todos");
+    if (stored) {
+      const parsedTodos = JSON.parse(stored);
+      setTodos(parsedTodos);
+      trackEvent("Local Todos Loaded", { count: parsedTodos.length });
+    }
+  }, []);
+
+  // Fetch cloud todos if logged in
+  useEffect(() => {
+    if (user && !user.isAnonymous) {
+      (async () => {
+        const snap = await getDoc(doc(db, "todos", user.uid));
+        if (snap.exists()) {
+          const cloud = snap.data().items || [];
+          setTodos(cloud);
+          localStorage.setItem("todos", JSON.stringify(cloud));
+          toast.info(`Loaded ${cloud.length} from Cloud`);
+          trackEvent("CloudTodosLoaded", { count: cloud.length });
+        }
+      })();
     }
   }, [user]);
 
+  // Persist to localStorage on change
   useEffect(() => {
-    if (!user || user.isAnonymous) {
-      localStorage.setItem("todos", JSON.stringify(todos));
-    }
-  }, [todos, user]);
+    localStorage.setItem("todos", JSON.stringify(todos));
+  }, [todos]);
 
-  useEffect(() => {
-    const saveToCloud = async () => {
-      if (user && !user.isAnonymous && todos.length > 0) {
-        await setDoc(
-          doc(db, "todos", user.uid),
-          { items: todos },
-          { merge: true }
-        );
-        trackEvent("Cloud Todos Updated", { count: todos.length });
-      }
-    };
-
-    if (user && !user.isAnonymous) {
-      saveToCloud();
-    }
-  }, [todos, user]);
-
+  // Auth handlers
   const handleLogin = async () => {
     try {
       const currentAnonymousId = anonymousId;
@@ -223,10 +197,12 @@ function App() {
 
   const handleSignOut = async () => {
     try {
+      // Track before sign out so we still have the user ID
       trackEvent("SignOut Initiated", { userId: user?.uid });
 
       await signOut(auth);
 
+      // Reset to anonymous tracking
       const newAnonymousId = `anon-${Date.now()}-${Math.random()
         .toString(36)
         .substring(2, 10)}`;
@@ -269,6 +245,8 @@ function App() {
     trackEvent("UploadedNewItems", { count: newItems.length });
   };
 
+  // To‑do handlers
+  // After: local + cloud sync
   const addTodo = async () => {
     const text = input.trim();
     if (!text) return;
@@ -281,6 +259,7 @@ function App() {
       selected: false,
     };
 
+    // 1) Update local state
     setTodos((prev) => [newTodo, ...prev]);
     toast.success(`Added: ${text}`);
     trackEvent("TodoAdded", {
@@ -291,6 +270,7 @@ function App() {
     setInput("");
     setLabelInput("");
 
+    // 2) If signed in, also push to Firestore
     if (user && !user.isAnonymous) {
       const ref = doc(db, "todos", user.uid);
       const snap = await getDoc(ref);
@@ -309,6 +289,7 @@ function App() {
   };
 
   const deleteTodo = async (id) => {
+    // Remove locally
     const updated = todos.filter((t) => t.id !== id);
     setTodos(updated);
     toast.info("Deleted a task");
@@ -317,6 +298,7 @@ function App() {
       userType: user?.isAnonymous ? "anonymous" : "authenticated",
     });
 
+    // Persist to Firestore
     if (user && !user.isAnonymous) {
       const ref = doc(db, "todos", user.uid);
       const snap = await getDoc(ref);
@@ -346,6 +328,7 @@ function App() {
   };
 
   const bulkDelete = async () => {
+    // Identify and remove locally
     const toDeleteIds = todos.filter((t) => t.selected).map((t) => t.id);
     const updated = todos.filter((t) => !t.selected);
     setTodos(updated);
@@ -399,28 +382,31 @@ function App() {
   };
 
   const clearCompleted = async () => {
+    // find completed & remaining
     const completedTasks = todos.filter((t) => t.completed);
     const remaining = todos.filter((t) => !t.completed);
 
+    // 1) update local state
     setTodos(remaining);
-    toast.info("Cleared completed");
-    trackEvent("ClearedCompleted", {
-      count: completedTasks.length,
-      userType: user?.isAnonymous ? "anonymous" : "authenticated",
+    setArchivedTodos((prev) => {
+      const updated = [...prev, ...completedTasks];
+      localStorage.setItem("archived", JSON.stringify(updated));
+      return updated;
     });
+    toast.info("Cleared completed");
+    trackEvent("ClearedCompleted", { count: completedTasks.length });
 
+    // 2) push to Firestore if signed-in
     if (user && !user.isAnonymous) {
       const ref = doc(db, "todos", user.uid);
       const snap = await getDoc(ref);
       const data = snap.exists() ? snap.data() : { items: [], archived: [] };
 
-      const updatedArchived = [...(data.archived || []), ...completedTasks];
-
       await setDoc(
         ref,
         {
           items: remaining,
-          archived: updatedArchived,
+          archived: [...data.archived, ...completedTasks],
         },
         { merge: true }
       );
