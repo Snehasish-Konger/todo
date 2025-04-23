@@ -45,12 +45,16 @@ function App() {
           "User has logged in before, using permanent ID:",
           permanentUserId
         );
+        mixpanel.register({
+          $user_id: permanentUserId,
+        });
         mixpanel.identify(permanentUserId);
       } else {
         const storedAnonymousId = localStorage.getItem("temporaryAnonymousId");
 
         if (storedAnonymousId) {
           console.log("Using existing anonymous ID:", storedAnonymousId);
+          // For anonymous users, we rely on the auto-generated $device_id
           mixpanel.identify(storedAnonymousId);
         } else {
           const newAnonymousId = `anon-${Date.now()}-${Math.random()
@@ -73,6 +77,7 @@ function App() {
 
         if (!u.isAnonymous) {
           const isFirstLogin = !localStorage.getItem("hasEverLoggedIn");
+
           if (isFirstLogin) {
             console.log("First login ever detected!");
             const anonymousId = localStorage.getItem("temporaryAnonymousId");
@@ -85,12 +90,17 @@ function App() {
                 u.uid
               );
 
+              // Get the current device ID that was automatically generated
               const currentDeviceId = mixpanel.get_property("$device_id");
-              mixpanel.alias(u.uid, anonymousId);
-              mixpanel.identify(u.uid);
+
+              // Register the user ID while maintaining the same device ID
+              // This is the key for Simplified ID Merge to work
               mixpanel.register({
-                $device_id: currentDeviceId,
+                $user_id: u.uid,
               });
+
+              // Now identify with the permanent user ID
+              mixpanel.identify(u.uid);
 
               trackEvent("Anonymous ID Merged", {
                 anonymousId: anonymousId,
@@ -98,6 +108,10 @@ function App() {
                 deviceId: currentDeviceId,
               });
             } else {
+              // No anonymous ID, just register and identify with the user ID
+              mixpanel.register({
+                $user_id: u.uid,
+              });
               mixpanel.identify(u.uid);
             }
 
@@ -117,6 +131,10 @@ function App() {
               localStorage.setItem("permanentUserId", u.uid);
             }
 
+            // Register the user ID for returning authenticated users
+            mixpanel.register({
+              $user_id: u.uid,
+            });
             mixpanel.identify(u.uid);
           }
 
@@ -178,16 +196,31 @@ function App() {
             });
           }
         } else {
-          if (!localStorage.getItem("hasEverLoggedIn")) {
+          // Anonymous user
+          const storedAnonymousId = localStorage.getItem(
+            "temporaryAnonymousId"
+          );
+
+          if (storedAnonymousId) {
+            // Use the existing anonymous ID
+            mixpanel.identify(storedAnonymousId);
+          } else if (hasLoggedInBefore && permanentUserId) {
+            // If they've logged in before, use their permanent ID
+            mixpanel.register({
+              $user_id: permanentUserId,
+            });
+            mixpanel.identify(permanentUserId);
+            trackEvent("FetchAllTasks");
+          } else {
+            // Create a new anonymous ID
+            const newAnonymousId = `anon-${Date.now()}-${Math.random()
+              .toString(36)
+              .substring(2, 10)}`;
+            localStorage.setItem("temporaryAnonymousId", newAnonymousId);
+            mixpanel.identify(newAnonymousId);
             mixpanel.people.set({ userType: "anonymous" });
             trackEvent("Anonymous Session Started");
             trackEvent("FetchAllTasks (anon)");
-          } else {
-            const permanentId = localStorage.getItem("permanentUserId");
-            if (permanentId) {
-              mixpanel.identify(permanentId);
-              trackEvent("FetchAllTasks");
-            }
           }
         }
       } else {
